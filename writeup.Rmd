@@ -1,0 +1,202 @@
+---
+title: "Practical Machine Learning Project"
+author: "George F. Dorsey, Jr."
+date: "26 July 2015"
+output: html_document
+---
+
+## Abstract
+
+The purpose of the project was to use accelerometer data measured for five activities to train a model which could then be used to predict the activity being measured for the test data.  The data were provided with permission of the Hugo Fuks group at PUC-Rio.  See the group's [web site](http://groupware.les.inf.puc-rio.br/har) for more information.  Several
+models were trained using the caret package to handle 10-fold cross validation
+in order to get an estimate of accuracy.  Models were built both with and without pre-processing using principal components analysis (PCA) to attempt to reduce the number of variables, but the estimated out of sample accuracy was less for PCA in all cases except for the k-nearest neighbors model.
+
+
+## Libraries
+
+The libraries used were `caret` for handling training, 10-fold cross validation, and preprocessing with PCA, `rattle` for plotting the classificaiton tree trained using the `rpart` method, and `knitr` for the `kable` function used to generate the accuracy and results tables.
+
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+library(caret)
+library(rattle)
+library(knitr)
+```
+
+
+## Dataset
+
+The training and test data sets were loaded, converting all empty values to `NA`, and all `NA` columns were then removed along with `X` (index), `user_name`, timestamps, and window columns since these are not expected to add any useful information to the models.  After these modificaitons, 53 variables remain--the `classe` outcome variable and 52 predictors.
+
+```{r echo=TRUE, eval=TRUE, cache=TRUE}
+train <- read.csv("pml-training.csv", na.strings = c('', NA))
+test <- read.csv("pml-testing.csv", na.strings = c('', NA))
+
+# remove 'X' column, user_name, timestamps, and window columns
+train <- train[,-c(1:7)]
+test <- test[,-c(1:7)]
+
+# remove NA columns (153 variables -> 53 variables)
+train <- train[, colSums(is.na(train)) == 0]
+test <- test[, colSums(is.na(test)) == 0]
+```
+
+
+## Models
+
+Several models were run on the entire training dataset using 10-fold cross-validation with the `cv` method of `trainControls`.  Each of the models was  run with and without preprocessing with the `pca` option of the `preProcess` argument in order to explore the benefit (or lack thereof) of dimension reduction with PCA.  The resulting `train` objects provided estimates of out-of-sample accuracy, and the 5 best models were chosen for prediction.  
+
+### Exploratory modeling with rpart
+
+First, just to get started, rpart was used to build a classification tree.
+
+```{r echo=TRUE, eval=TRUE, cache=TRUE}
+fit.rpart.cv <- train(classe ~ ., data = train, method = 'rpart',
+                   trControl = trainControl(method = 'cv'))
+print(fit.rpart.cv)
+```
+
+The resulting accuracy is poor, `r round(max(fit.rpart.cv$results$Accuracy),3)` for the best model, and was not improved using PCA.  A look at the tree itself reveals that outcome 'D' is never even predicted.
+
+```{r echo=TRUE, eval=TRUE}
+fancyRpartPlot(fit.rpart.cv$finalModel)
+```
+
+### Better models
+
+The approach chosen to improve on the classificaiton tree result was to build several models and pick the best model or models based on the accuracy.  Besides `rpart`, the `knn` (k-nearest neighbors clustering), `rf` (random forests), `nb` (naïve Bayes), `svmLinear` (support vector machine with linear kernel), and `gbm` (gradient boosted machine) methods were successfully run.  Only for `knn` did the PCA pre-processing result in improved accuracy.  
+
+Because of the long run times, only the best five models in terms of accuracy were re-run for this writeup, but the methods were all run in a similar fashion to the code below.  To save space, the results are not printed, but are summarized in the next section using the maximum `Accuracy` of the `results` list item of the resulting `train` objects.
+
+```{r echo=TRUE, eval=TRUE, cache=TRUE}
+fit.knn.cv <- train(classe ~ ., data = train, method = 'knn',
+                        trControl = trainControl(method = 'cv'))
+```
+
+```{r echo=TRUE, eval=TRUE, cache=TRUE}
+fit.knn.pca.cv <- train(classe ~ ., data = train, method = 'knn',
+                    preProcess = c('pca'),
+                    trControl = trainControl(method = 'cv'))
+```
+
+```{r echo=TRUE, eval=TRUE, cache=TRUE, message=FALSE, warning=FALSE}
+fit.rf.cv <- train(classe ~ ., data = train, method = 'rf',
+                       trControl = trainControl(method = 'cv'))
+```
+
+```{r echo=TRUE, eval=TRUE, cache=TRUE, message=FALSE, warning=FALSE}
+fit.rf.pca.cv <- train(classe ~ ., data = train, method = 'rf',
+                       preProcess = c('pca'),
+                       trControl = trainControl(method = 'cv'))
+```
+
+```{r echo=TRUE, eval=TRUE, cache=TRUE, message=FALSE, warning=FALSE, results='hide'}
+fit.gbm.cv <- train(classe ~ ., data = train, method = 'gbm',
+                    trControl = trainControl(method = 'cv'))
+```
+
+
+## Out of Sample Error
+
+The out-of-sample error, or the out-of-sample accuracy subtracted from 100%, can be calculated in three ways.
+
+1. The true out-of-sample error can be calculated from the test set after predicting those results, provided the true answers are known.  In this case, those results are known from submission of the predictions for grading, but the test set is too small to be meaningful.  Nevertheless, the out-of-sample error is given in the Results and Conclusions section for the small sample.
+2. An estimate of the out-of-sample error can be made based on the 10-fold cross validation used to build the models.  These accuracies and the corresponding errors are given below.  This was the primary approach taken for this work.
+3. The training data can be split into training and validation sets, and the out-of-sample accuracy (and error) can be calculated by comparing the predictions given by the model with the true values from the validation set.  Although not actually used in the building of the five models shared here or the others evaluated since cross-validation was used instead, this method is also demonstrated below.
+
+### Based on cross validation
+
+The estimated out-of-sample accuracy is available from the train results, and is collated for the best five models as shown below.
+
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE, results='asis'}
+acc <- function (x) {
+    accuracy <- x$results$Accuracy
+    round(max(accuracy), 3)
+}
+
+accuracy = c(acc(fit.knn.cv),
+          acc(fit.knn.pca.cv),
+          acc(fit.rf.cv),
+          acc(fit.rf.pca.cv),
+          acc(fit.gbm.cv))
+results <- data.frame(
+    method = c('knn', 'knn.pca', 'rf', 'rf.pca', 'gbm'),
+    accuracy,
+    error = 1 - accuracy)
+kable(results, format = 'markdown')
+```
+
+Based on these results, the random forest method without PCA appears to be the best choice of the methods tried.
+
+### Based on data splitting
+
+The `createDataPartition` function of the `caret` package can be used to do an 80:20 split of the data.  The data are trained on the larger portion, and prediction of the smaller portion is used to estimate out of sample accuracy and error.
+
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+inTrain <- createDataPartition(y = train$classe, p = 0.8, list = FALSE)
+splitTrain <- train[inTrain,]
+splitTest <- train[-inTrain,]
+
+val.rf <- train(classe ~ ., data = splitTrain, method = 'rf')
+```
+
+Then using the model built from the training subset, predictions can be made for the reserved data and compared with the true values to obtain the out-of-sample accuracy.
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+preds.val.rf <- predict(val.rf, splitTest)
+val.accuracy <- sum(preds.val.rf == splitTest$classe) / length(splitTest$classe)
+round(val.accuracy,3)
+```
+
+And the out-of-sample error can be calculated from the accuracy.
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+val.error <- 1 - val.accuracy
+round(val.error,3)
+```
+
+This agrees with the value estimated by cross validation.
+
+## Results and Conclusions
+
+The random forest method without PCA had the highest accuracy using cross validation, but rather than simply pick this model, predictions were done for all of the top five models for comparison.
+
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE}
+preds.knn <- predict(fit.knn.cv, test)
+preds.knn.pca <- predict(fit.knn.pca.cv, test)
+preds.rf <- predict(fit.rf.cv, test)
+preds.rf.pca <- predict(fit.rf.pca.cv, test)
+preds.gbm <- predict(fit.gbm.cv, test)
+
+preds.df <- data.frame(knn = preds.knn,
+                       knn.pca = preds.knn.pca,
+                       rf = preds.rf,
+                       rf.pca = preds.rf.pca,
+                       gbm = preds.gbm)
+
+# find most frequent
+preds.df$best <- apply(preds.df, 1, function(x) {names(which.max(table(x)))})
+
+# show frequency of best choice
+preds.df$freq <- apply(preds.df, 1, function(x) {sum(x[1:5] == x[6])/5})
+```
+```{r echo=TRUE, eval=TRUE, warning=FALSE, message=FALSE, results='asis'}
+kable(preds.df, format = 'markdown')
+```
+
+For 19 of the 20 observations, all 5 models are in agreement, but for observation 3, the PCA models are different.  I chose to use the majority model in this case, which was correct.  That is to say, the out-of-sample error for the knn, rf, and gbm models was 0.000, while for the two pca models (knn and rf), it was 0.050.  Again, note that these may not be meaningful numbers for a small data set, so the true out-of-sample error on unknown data may be closer to that estimated by the other methods. 
+
+Finally, it perhaps goes without saying that the function given on the course website was used to create the submission files.
+
+```{r echo=TRUE, eval=FALSE, warning=FALSE, message=FALSE}
+answers = as.character(preds.df$best)
+pml_write_files = function(x){
+    n = length(x)
+    for(i in 1:n){
+        filename = paste0("problem_id_",i,".txt")
+        write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}
+
+setwd("predictions/")
+pml_write_files(answers)
+```
+
+
